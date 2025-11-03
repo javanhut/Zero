@@ -12,6 +12,7 @@ import (
 	"github.com/pion/mediadevices/pkg/io/video"
 	"github.com/pion/mediadevices/pkg/prop"
 	"github.com/pion/mediadevices/pkg/wave"
+	"github.com/pion/webrtc/v4"
 
 	_ "github.com/pion/mediadevices/pkg/driver/camera"
 	_ "github.com/pion/mediadevices/pkg/driver/microphone"
@@ -327,4 +328,39 @@ func (vs *VideoStream) Stop() error {
 	}
 
 	return nil
+}
+
+func (vs *VideoStream) GetVideoTrack() *mediadevices.VideoTrack {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	return vs.track
+}
+
+func (vs *VideoStream) GetAudioTrack() *mediadevices.AudioTrack {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	return vs.audioTrack
+}
+
+func (vs *VideoStream) CreateWebRTCTracks() (*webrtc.TrackLocalStaticSample, *webrtc.TrackLocalStaticSample, error) {
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+		"video",
+		"zero-video",
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create video track: %w", err)
+	}
+
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"audio",
+		"zero-audio",
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create audio track: %w", err)
+	}
+
+	log.Println("Created WebRTC tracks (tracks will be populated by mediadevices integration)")
+	return videoTrack, audioTrack, nil
 }

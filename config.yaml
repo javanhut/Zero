@@ -1,0 +1,22 @@
+signaling:
+  server_address: "localhost:8080"
+  ws_path: "/ws"
+
+webrtc:
+  ice_servers:
+    - urls: "stun:stun.l.google.com:19302"
+    - urls: "stun:stun1.l.google.com:19302"
+
+sfu:
+  enabled: false
+  address: "localhost:5551"
+
+media:
+  video:
+    codec: "vp8"
+    resolution: "HD"
+    bitrate: 1500000
+  audio:
+    codec: "opus"
+    sample_rate: 48000
+    bitrate: 48000

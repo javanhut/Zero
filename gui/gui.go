@@ -12,8 +12,12 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"github.com/google/uuid"
 	"github.com/javanhut/zero/camera"
 	"github.com/javanhut/zero/sessionmanager"
+	"github.com/javanhut/zero/signaling"
+	"github.com/javanhut/zero/webrtc"
+	pwebrtc "github.com/pion/webrtc/v4"
 )
 
 func calculateAudioColor(dbLevel float64) color.Color {
@@ -148,8 +152,7 @@ func showStatsDialog(a fyne.App, vs *camera.VideoStream) {
 }
 
 func Gui() {
-	sessions := sessionmanager.SessionManager{}
-	sessions.New()
+	sessions := sessionmanager.New()
 	a := app.New()
 	w := a.NewWindow("Session Login")
 	videoWindow := a.NewWindow("Video Window")
@@ -158,7 +161,11 @@ func Gui() {
 
 	var currentSessionID string
 	var currentUsername string
+	var currentPeerID string
 	var videoStream *camera.VideoStream
+	var signalingClient *signaling.Client
+	var webrtcManager *webrtc.Manager
+	signalingServerURL := "ws://localhost:8080/ws"
 
 	videoCanvas := canvas.NewImageFromImage(nil)
 	videoCanvas.FillMode = canvas.ImageFillOriginal
@@ -288,9 +295,20 @@ func Gui() {
 	}
 
 	videoWindow.SetCloseIntercept(func() {
+		if webrtcManager != nil {
+			webrtcManager.Close()
+			webrtcManager = nil
+		}
+		if signalingClient != nil {
+			signalingClient.Disconnect()
+			signalingClient = nil
+		}
 		if videoStream != nil {
 			videoStream.Stop()
 			videoStream = nil
+		}
+		if currentSessionID != "" && currentPeerID != "" {
+			sessions.RemovePeerFromSession(currentSessionID, currentPeerID)
 		}
 		cameraBtn.Disable()
 		audioBtn.Disable()
@@ -320,6 +338,7 @@ func Gui() {
 					sessionID, username := sessions.CreateNewSession()
 					currentSessionID = sessionID
 					currentUsername = username
+					currentPeerID = uuid.New().String()
 					entry.SetText(currentSessionID)
 
 					videoLabel.SetText("Starting camera...")
@@ -329,47 +348,126 @@ func Gui() {
 					if err != nil {
 						log.Printf("Failed to start camera: %v", err)
 						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
-					} else {
-						videoStream = stream
-						videoLabel.SetText("")
-						cameraBtn.Enable()
-						audioBtn.Enable()
-						statsBtn.Enable()
-						cameraEnabled = true
-						audioEnabled = true
-						cameraBtn.SetText("Camera On")
-						audioBtn.SetText("Audio On")
+						return
 					}
+
+					videoStream = stream
+					videoLabel.SetText("Connecting to signaling server...")
+
+					signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
+					if err := signalingClient.Connect(); err != nil {
+						log.Printf("Failed to connect to signaling server: %v", err)
+						videoLabel.SetText(fmt.Sprintf("Signaling error: %v", err))
+						return
+					}
+
+					webrtcConfig := webrtc.DefaultConfig()
+					webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
+						WebRTCConfig:    webrtcConfig,
+						SignalingClient: signalingClient,
+						OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
+							log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
+						},
+						OnPeerDisconnect: func(peerID string) {
+							log.Printf("Peer disconnected: %s", peerID)
+						},
+					})
+
+					videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+					if err != nil {
+						log.Printf("Failed to create WebRTC tracks: %v", err)
+					} else {
+						if videoTrack != nil {
+							webrtcManager.AddLocalTrack(videoTrack)
+						}
+						if audioTrack != nil {
+							webrtcManager.AddLocalTrack(audioTrack)
+						}
+					}
+
+					videoLabel.SetText("")
+					cameraBtn.Enable()
+					audioBtn.Enable()
+					statsBtn.Enable()
+					cameraEnabled = true
+					audioEnabled = true
+					cameraBtn.SetText("Camera On")
+					audioBtn.SetText("Audio On")
+					log.Printf("Session created and WebRTC initialized: %s", currentSessionID)
 				}),
 				widget.NewButton("Connect", func() {
 					log.Println("Attempting to connect to session....")
-					session_id_str := fmt.Sprintf("Session ID: %s", entry.Text)
-					log.Println(session_id_str)
-					if sessions.CheckForSession(entry.Text) {
-						currentSessionID = entry.Text
-						currentUsername = sessions.GetUsername(entry.Text)
-
-						videoLabel.SetText("Starting camera...")
-						videoWindow.Show()
-
-						stream, err := camera.StartVideoStream("HD", updateVideo)
-						if err != nil {
-							log.Printf("Failed to start camera: %v", err)
-							videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
-						} else {
-							videoStream = stream
-							videoLabel.SetText("")
-							cameraBtn.Enable()
-							audioBtn.Enable()
-							statsBtn.Enable()
-							cameraEnabled = true
-							audioEnabled = true
-							cameraBtn.SetText("Camera On")
-							audioBtn.SetText("Audio On")
-						}
-					} else {
-						log.Println("Cannot open video window - session does not exist")
+					sessionIDInput := entry.Text
+					if sessionIDInput == "" {
+						log.Println("Please enter a session ID")
+						return
 					}
+
+					currentSessionID = sessionIDInput
+					currentPeerID = uuid.New().String()
+
+					peerID, username, err := sessions.JoinSession(currentSessionID)
+					if err != nil {
+						log.Printf("Failed to join session: %v", err)
+						videoLabel.SetText(fmt.Sprintf("Join error: %v", err))
+						return
+					}
+					currentPeerID = peerID
+					currentUsername = username
+
+					videoLabel.SetText("Starting camera...")
+					videoWindow.Show()
+
+					stream, err := camera.StartVideoStream("HD", updateVideo)
+					if err != nil {
+						log.Printf("Failed to start camera: %v", err)
+						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
+						return
+					}
+
+					videoStream = stream
+					videoLabel.SetText("Connecting to signaling server...")
+
+					signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
+					if err := signalingClient.Connect(); err != nil {
+						log.Printf("Failed to connect to signaling server: %v", err)
+						videoLabel.SetText(fmt.Sprintf("Signaling error: %v", err))
+						return
+					}
+
+					webrtcConfig := webrtc.DefaultConfig()
+					webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
+						WebRTCConfig:    webrtcConfig,
+						SignalingClient: signalingClient,
+						OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
+							log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
+						},
+						OnPeerDisconnect: func(peerID string) {
+							log.Printf("Peer disconnected: %s", peerID)
+						},
+					})
+
+					videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+					if err != nil {
+						log.Printf("Failed to create WebRTC tracks: %v", err)
+					} else {
+						if videoTrack != nil {
+							webrtcManager.AddLocalTrack(videoTrack)
+						}
+						if audioTrack != nil {
+							webrtcManager.AddLocalTrack(audioTrack)
+						}
+					}
+
+					videoLabel.SetText("")
+					cameraBtn.Enable()
+					audioBtn.Enable()
+					statsBtn.Enable()
+					cameraEnabled = true
+					audioEnabled = true
+					cameraBtn.SetText("Camera On")
+					audioBtn.SetText("Audio On")
+					log.Printf("Connected to session: %s", currentSessionID)
 				}),
 			),
 		),
