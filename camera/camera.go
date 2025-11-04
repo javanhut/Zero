@@ -14,8 +14,13 @@ import (
 	"github.com/pion/mediadevices/pkg/wave"
 	"github.com/pion/webrtc/v4"
 
-	_ "github.com/pion/mediadevices/pkg/driver/camera"
-	_ "github.com/pion/mediadevices/pkg/driver/microphone"
+	// Import drivers - these register themselves on init
+	_ "github.com/pion/mediadevices/pkg/driver/camera"     // Camera driver
+	_ "github.com/pion/mediadevices/pkg/driver/microphone" // Microphone driver
+
+	// Import codecs - required for media processing
+	_ "github.com/pion/mediadevices/pkg/codec/vpx"  // VP8/VP9 codec
+	_ "github.com/pion/mediadevices/pkg/codec/opus" // Opus audio codec
 )
 
 type ScreenSize struct {
@@ -56,7 +61,90 @@ type VideoStream struct {
 	mu             sync.RWMutex
 }
 
-func StartVideoStream(resolution string, updateFunc func(image.Image)) (*VideoStream, error) {
+func GetCameraDevices() []mediadevices.MediaDeviceInfo {
+	devices := mediadevices.EnumerateDevices()
+
+	log.Printf("Found %d media devices", len(devices))
+
+	var cameraDevices []mediadevices.MediaDeviceInfo
+	for i, device := range devices {
+		log.Printf("  Device %d: Kind=%v, DeviceID=%s, Label=%s",
+			i, device.Kind, device.DeviceID, device.Label)
+
+		if device.Kind == mediadevices.VideoInput {
+			cameraDevices = append(cameraDevices, device)
+		}
+	}
+
+	log.Printf("Found %d camera devices (VideoInput)", len(cameraDevices))
+
+	return cameraDevices
+}
+
+func getMediaStream(resolution, cameraDeviceID string) (mediadevices.MediaStream, error) {
+	size, ok := Resolution[resolution]
+	if !ok {
+		size = Resolution["HD"]
+	}
+
+	log.Printf("Attempting to get media stream with resolution: %s (%dx%d), deviceID: %s",
+		resolution, size.Width, size.Height, cameraDeviceID)
+
+	// First try: completely unconstrained to see if basic access works
+	constraints := mediadevices.MediaStreamConstraints{
+		Video: func(c *mediadevices.MediaTrackConstraints) {
+			if cameraDeviceID != "" {
+				c.DeviceID = prop.String(cameraDeviceID)
+			}
+		},
+		Audio: func(c *mediadevices.MediaTrackConstraints) {
+		},
+	}
+
+	stream, err := mediadevices.GetUserMedia(constraints)
+	if err == nil {
+		log.Printf("Successfully got media stream with unconstrained settings")
+		return stream, nil
+	}
+
+	log.Printf("Failed with unconstrained access: %v", err)
+	log.Printf("Trying without audio...")
+
+	// Second try: video only, no audio
+	constraints = mediadevices.MediaStreamConstraints{
+		Video: func(c *mediadevices.MediaTrackConstraints) {
+			if cameraDeviceID != "" {
+				c.DeviceID = prop.String(cameraDeviceID)
+			}
+		},
+	}
+
+	stream, err = mediadevices.GetUserMedia(constraints)
+	if err == nil {
+		log.Printf("Successfully got media stream (video only)")
+		return stream, nil
+	}
+
+	log.Printf("Failed with video-only constraints: %v", err)
+
+	// Third try: Try without specifying device ID
+	if cameraDeviceID != "" {
+		log.Printf("Trying without device ID specification...")
+		constraints = mediadevices.MediaStreamConstraints{
+			Video: func(c *mediadevices.MediaTrackConstraints) {
+			},
+		}
+		stream, err = mediadevices.GetUserMedia(constraints)
+		if err == nil {
+			log.Printf("Successfully got media stream (no device ID specified)")
+			return stream, nil
+		}
+	}
+
+	return nil, fmt.Errorf("all attempts to get media stream failed: %w", err)
+}
+
+func StartVideoStream(resolution, cameraDeviceID string, updateFunc func(image.Image)) (*VideoStream, error) {
 	size, ok := Resolution[resolution]
 	if !ok {
 		log.Printf("Unknown resolution %s, defaulting to HD", resolution)
@@ -64,17 +152,7 @@ func StartVideoStream(resolution string, updateFunc func(image.Image)) (*VideoSt
 		resolution = "HD"
 	}
 
-	stream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
-		Video: func(c *mediadevices.MediaTrackConstraints) {
-			c.Width = prop.Int(size.Width)
-			c.Height = prop.Int(size.Height)
-			c.FrameRate = prop.Float(30.0)
-		},
-		Audio: func(c *mediadevices.MediaTrackConstraints) {
-			c.SampleRate = prop.Int(48000)
-			c.ChannelCount = prop.Int(1)
-		},
-	})
+	stream, err := getMediaStream(resolution, cameraDeviceID)
 	if err != nil {
 		log.Printf("Failed to get user media: %v", err)
 		return nil, err

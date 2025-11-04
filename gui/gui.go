@@ -66,6 +66,44 @@ func calculateAudioSize(dbLevel float64) float32 {
 	return minSize + float32(normalized)*(maxSize-minSize)
 }
 
+func showCameraSelectionDialog(a fyne.App, onSelect func(string)) {
+	cameraDevices := camera.GetCameraDevices()
+
+	if len(cameraDevices) == 0 {
+		log.Println("No camera devices found")
+		return
+	}
+
+	window := a.NewWindow("Select Camera")
+	window.Resize(fyne.NewSize(300, 200))
+
+	var deviceLabels []string
+	for _, device := range cameraDevices {
+		deviceLabels = append(deviceLabels, device.Label)
+	}
+
+	cameraList := widget.NewRadioGroup(deviceLabels, func(selected string) {
+		for _, device := range cameraDevices {
+			if device.Label == selected {
+				onSelect(device.DeviceID)
+				window.Close()
+				return
+			}
+		}
+	})
+
+	content := container.NewVBox(
+		widget.NewLabel("Select a camera source:"),
+		cameraList,
+		widget.NewButton("Cancel", func() {
+			window.Close()
+		}),
+	)
+
+	window.SetContent(container.NewCenter(content))
+	window.Show()
+}
+
 func showStatsDialog(a fyne.App, vs *camera.VideoStream) {
 	if vs == nil {
 		return
@@ -232,6 +270,7 @@ func Gui() {
 	var cameraBtn *widget.Button
 	var audioBtn *widget.Button
 	var statsBtn *widget.Button
+	var selectCameraBtn *widget.Button
 
 	cameraBtn = widget.NewButton("Camera On", func() {
 		if videoStream == nil {
@@ -270,11 +309,33 @@ func Gui() {
 		showStatsDialog(a, videoStream)
 	})
 
+	updateVideo := func(frame image.Image) {
+		fyne.Do(func() {
+			videoCanvas.Image = frame
+			videoCanvas.Refresh()
+		})
+	}
+
+	selectCameraBtn = widget.NewButton("Select Camera", func() {
+		showCameraSelectionDialog(a, func(deviceID string) {
+			if videoStream != nil {
+				videoStream.Stop()
+			}
+			stream, err := camera.StartVideoStream("HD", deviceID, updateVideo)
+			if err != nil {
+				log.Printf("Failed to start camera: %v", err)
+				videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
+				return
+			}
+			videoStream = stream
+		})
+	})
+
 	cameraBtn.Disable()
 	audioBtn.Disable()
 	statsBtn.Disable()
 
-	buttonContainer := container.NewHBox(cameraBtn, audioBtn, statsBtn, audioMeterContainer)
+	buttonContainer := container.NewHBox(cameraBtn, audioBtn, statsBtn, selectCameraBtn, audioMeterContainer)
 	controlPanel := container.NewVBox(
 		container.NewCenter(buttonContainer),
 	)
@@ -286,13 +347,6 @@ func Gui() {
 		container.NewBorder(nil, controlPanel, nil, nil),
 	)
 	videoWindow.SetContent(videoContainer)
-
-	updateVideo := func(frame image.Image) {
-		fyne.Do(func() {
-			videoCanvas.Image = frame
-			videoCanvas.Refresh()
-		})
-	}
 
 	videoWindow.SetCloseIntercept(func() {
 		if webrtcManager != nil {
@@ -339,12 +393,10 @@ func Gui() {
 					currentSessionID = sessionID
 					currentUsername = username
 					currentPeerID = uuid.New().String()
-					entry.SetText(currentSessionID)
-
 					videoLabel.SetText("Starting camera...")
 					videoWindow.Show()
 
-					stream, err := camera.StartVideoStream("HD", updateVideo)
+					stream, err := camera.StartVideoStream("HD", "", updateVideo)
 					if err != nil {
 						log.Printf("Failed to start camera: %v", err)
 						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
@@ -418,7 +470,7 @@ func Gui() {
 					videoLabel.SetText("Starting camera...")
 					videoWindow.Show()
 
-					stream, err := camera.StartVideoStream("HD", updateVideo)
+					stream, err := camera.StartVideoStream("HD", "", updateVideo)
 					if err != nil {
 						log.Printf("Failed to start camera: %v", err)
 						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
