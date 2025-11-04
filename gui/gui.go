@@ -11,6 +11,8 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/javanhut/zero/camera"
@@ -211,6 +213,7 @@ func Gui() {
 	videoCanvas.SetMinSize(fyne.NewSize(1280, 720))
 
 	videoLabel := widget.NewLabel("Video stream will appear here...")
+	videoLabel.Alignment = fyne.TextAlignCenter
 
 	pauseBackground := canvas.NewRectangle(color.Black)
 	pauseBackground.SetMinSize(fyne.NewSize(1280, 720))
@@ -238,8 +241,11 @@ func Gui() {
 	audioMeterLabel := widget.NewLabel("Mic")
 	audioMeterLabel.Alignment = fyne.TextAlignCenter
 
+	circleContainer := container.NewCenter(audioCircle)
+	circleContainer.Resize(fyne.NewSize(50, 50))
+
 	audioMeterContainer := container.NewVBox(
-		audioCircle,
+		circleContainer,
 		audioMeterLabel,
 	)
 
@@ -259,6 +265,7 @@ func Gui() {
 					audioCircle.FillColor = circleColor
 					audioCircle.Resize(fyne.NewSize(circleSize, circleSize))
 					audioCircle.Refresh()
+					circleContainer.Refresh()
 				})
 			}
 		}
@@ -266,11 +273,15 @@ func Gui() {
 
 	cameraEnabled := true
 	audioEnabled := true
+	currentResolution := "HD"
 
 	var cameraBtn *widget.Button
 	var audioBtn *widget.Button
 	var statsBtn *widget.Button
 	var selectCameraBtn *widget.Button
+	var resolutionSelect *widget.Select
+	var fullScreenBtn *widget.Button
+	isFullScreen := false
 
 	cameraBtn = widget.NewButton("Camera On", func() {
 		if videoStream == nil {
@@ -289,6 +300,7 @@ func Gui() {
 			pauseOverlay.Hide()
 		}
 	})
+	cameraBtn.Importance = widget.HighImportance
 
 	audioBtn = widget.NewButton("Audio On", func() {
 		if videoStream == nil {
@@ -304,10 +316,25 @@ func Gui() {
 			audioEnabled = true
 		}
 	})
+	audioBtn.Importance = widget.HighImportance
 
 	statsBtn = widget.NewButton("Stats", func() {
 		showStatsDialog(a, videoStream)
 	})
+	statsBtn.Importance = widget.MediumImportance
+
+	fullScreenBtn = widget.NewButtonWithIcon("Full Screen", theme.ViewFullScreenIcon(), func() {
+		isFullScreen = !isFullScreen
+		videoWindow.SetFullScreen(isFullScreen)
+		if isFullScreen {
+			fullScreenBtn.SetText("Exit Full Screen")
+			fullScreenBtn.SetIcon(theme.ViewRestoreIcon())
+		} else {
+			fullScreenBtn.SetText("Full Screen")
+			fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
+		}
+	})
+	fullScreenBtn.Importance = widget.HighImportance
 
 	updateVideo := func(frame image.Image) {
 		fyne.Do(func() {
@@ -321,30 +348,131 @@ func Gui() {
 			if videoStream != nil {
 				videoStream.Stop()
 			}
-			stream, err := camera.StartVideoStream("HD", deviceID, updateVideo)
+			videoLabel.Show()
+			videoLabel.SetText("Switching camera...")
+			stream, err := camera.StartVideoStream(currentResolution, deviceID, updateVideo)
 			if err != nil {
 				log.Printf("Failed to start camera: %v", err)
+				videoLabel.Show()
 				videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
 				return
 			}
 			videoStream = stream
+			videoLabel.Hide()
+
+			if webrtcManager != nil {
+				videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+				if err != nil {
+					log.Printf("Failed to create WebRTC tracks: %v", err)
+				} else {
+					if videoTrack != nil {
+						webrtcManager.AddLocalTrack(videoTrack)
+					}
+					if audioTrack != nil {
+						webrtcManager.AddLocalTrack(audioTrack)
+					}
+				}
+			}
 		})
 	})
+	selectCameraBtn.Importance = widget.MediumImportance
+
+	resolutionSelect = widget.NewSelect([]string{"SD", "HD", "FullHD", "QHD"}, func(selected string) {
+		currentResolution = selected
+		log.Printf("Resolution changed to: %s", selected)
+
+		if videoStream != nil {
+			oldStream := videoStream
+
+			fyne.Do(func() {
+				videoLabel.Show()
+				videoLabel.SetText("Changing resolution...")
+			})
+
+			go func() {
+				oldStream.Stop()
+
+				cameraDeviceID := ""
+				stream, err := camera.StartVideoStream(currentResolution, cameraDeviceID, updateVideo)
+				if err != nil {
+					log.Printf("Failed to restart camera with new resolution: %v", err)
+					fyne.Do(func() {
+						videoLabel.Show()
+						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
+					})
+					return
+				}
+				videoStream = stream
+
+				fyne.Do(func() {
+					size := camera.Resolution[currentResolution]
+					videoCanvas.SetMinSize(fyne.NewSize(float32(size.Width), float32(size.Height)))
+					pauseBackground.SetMinSize(fyne.NewSize(float32(size.Width), float32(size.Height)))
+					videoWindow.Resize(fyne.NewSize(float32(size.Width), float32(size.Height)+100))
+					videoLabel.Hide()
+					cameraEnabled = true
+					cameraBtn.SetText("Camera On")
+					pauseOverlay.Hide()
+				})
+
+				if webrtcManager != nil {
+					videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+					if err != nil {
+						log.Printf("Failed to create WebRTC tracks: %v", err)
+					} else {
+						if videoTrack != nil {
+							webrtcManager.AddLocalTrack(videoTrack)
+						}
+						if audioTrack != nil {
+							webrtcManager.AddLocalTrack(audioTrack)
+						}
+					}
+				}
+			}()
+		}
+	})
+	resolutionSelect.SetSelected("HD")
 
 	cameraBtn.Disable()
 	audioBtn.Disable()
 	statsBtn.Disable()
+	resolutionSelect.Disable()
+	fullScreenBtn.Disable()
 
-	buttonContainer := container.NewHBox(cameraBtn, audioBtn, statsBtn, selectCameraBtn, audioMeterContainer)
-	controlPanel := container.NewVBox(
-		container.NewCenter(buttonContainer),
+	resolutionLabel := widget.NewLabel("Resolution:")
+	resolutionContainer := container.NewHBox(resolutionLabel, resolutionSelect)
+
+	controlsBackground := canvas.NewRectangle(color.RGBA{R: 28, G: 32, B: 37, A: 255})
+	controlsBackground.SetMinSize(fyne.NewSize(0, 72))
+
+	controlsRow := container.NewHBox(
+		cameraBtn,
+		audioBtn,
+		statsBtn,
+		selectCameraBtn,
+		resolutionContainer,
+		fullScreenBtn,
+		layout.NewSpacer(),
+		audioMeterContainer,
 	)
 
-	videoContainer := container.NewStack(
-		videoCanvas,
-		pauseOverlay,
-		videoLabel,
-		container.NewBorder(nil, controlPanel, nil, nil),
+	styledControls := container.NewStack(
+		controlsBackground,
+		container.NewPadded(controlsRow),
+	)
+
+	controlPanel := container.NewVBox(styledControls)
+
+	videoContainer := container.NewBorder(
+		nil,
+		controlPanel,
+		nil,
+		nil,
+		container.NewStack(
+			videoCanvas,
+			pauseOverlay,
+			videoLabel,
+		),
 	)
 	videoWindow.SetContent(videoContainer)
 
@@ -367,6 +495,14 @@ func Gui() {
 		cameraBtn.Disable()
 		audioBtn.Disable()
 		statsBtn.Disable()
+		resolutionSelect.Disable()
+		fullScreenBtn.Disable()
+		if isFullScreen {
+			videoWindow.SetFullScreen(false)
+			isFullScreen = false
+		}
+		fullScreenBtn.SetText("Full Screen")
+		fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
 		cameraEnabled = true
 		audioEnabled = true
 		cameraBtn.SetText("Camera On")
@@ -393,59 +529,91 @@ func Gui() {
 					currentSessionID = sessionID
 					currentUsername = username
 					currentPeerID = uuid.New().String()
+					videoLabel.Show()
 					videoLabel.SetText("Starting camera...")
 					videoWindow.Show()
 
-					stream, err := camera.StartVideoStream("HD", "", updateVideo)
-					if err != nil {
-						log.Printf("Failed to start camera: %v", err)
-						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
-						return
-					}
-
-					videoStream = stream
-					videoLabel.SetText("Connecting to signaling server...")
-
-					signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
-					if err := signalingClient.Connect(); err != nil {
-						log.Printf("Failed to connect to signaling server: %v", err)
-						videoLabel.SetText(fmt.Sprintf("Signaling error: %v", err))
-						return
-					}
-
-					webrtcConfig := webrtc.DefaultConfig()
-					webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
-						WebRTCConfig:    webrtcConfig,
-						SignalingClient: signalingClient,
-						OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
-							log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
-						},
-						OnPeerDisconnect: func(peerID string) {
-							log.Printf("Peer disconnected: %s", peerID)
-						},
-					})
-
-					videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
-					if err != nil {
-						log.Printf("Failed to create WebRTC tracks: %v", err)
-					} else {
-						if videoTrack != nil {
-							webrtcManager.AddLocalTrack(videoTrack)
+					go func() {
+						stream, err := camera.StartVideoStream(currentResolution, "", updateVideo)
+						if err != nil {
+							log.Printf("Failed to start camera: %v", err)
+							fyne.Do(func() {
+								videoLabel.Show()
+								videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
+							})
+							return
 						}
-						if audioTrack != nil {
-							webrtcManager.AddLocalTrack(audioTrack)
-						}
-					}
 
-					videoLabel.SetText("")
-					cameraBtn.Enable()
-					audioBtn.Enable()
-					statsBtn.Enable()
-					cameraEnabled = true
-					audioEnabled = true
-					cameraBtn.SetText("Camera On")
-					audioBtn.SetText("Audio On")
-					log.Printf("Session created and WebRTC initialized: %s", currentSessionID)
+						videoStream = stream
+						fyne.Do(func() {
+							videoLabel.Show()
+							videoLabel.SetText("Connecting to signaling server...")
+						})
+
+						signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
+						if err := signalingClient.Connect(); err != nil {
+							log.Printf("Failed to connect to signaling server: %v", err)
+							fyne.Do(func() {
+								videoLabel.SetText(fmt.Sprintf("Signaling error: %v\nCamera controls available", err))
+								cameraBtn.Enable()
+								audioBtn.Enable()
+								statsBtn.Enable()
+								resolutionSelect.Enable()
+								fullScreenBtn.Enable()
+								videoWindow.SetFullScreen(false)
+								isFullScreen = false
+								fullScreenBtn.SetText("Full Screen")
+								fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
+								cameraEnabled = true
+								audioEnabled = true
+								cameraBtn.SetText("Camera On")
+								audioBtn.SetText("Audio On")
+							})
+							return
+						}
+
+						webrtcConfig := webrtc.DefaultConfig()
+						webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
+							WebRTCConfig:    webrtcConfig,
+							SignalingClient: signalingClient,
+							OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
+								log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
+							},
+							OnPeerDisconnect: func(peerID string) {
+								log.Printf("Peer disconnected: %s", peerID)
+							},
+						})
+
+						videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+						if err != nil {
+							log.Printf("Failed to create WebRTC tracks: %v", err)
+						} else {
+							if videoTrack != nil {
+								webrtcManager.AddLocalTrack(videoTrack)
+							}
+							if audioTrack != nil {
+								webrtcManager.AddLocalTrack(audioTrack)
+							}
+						}
+
+						fyne.Do(func() {
+							videoLabel.Hide()
+							cameraBtn.Enable()
+							audioBtn.Enable()
+							statsBtn.Enable()
+							resolutionSelect.Enable()
+							fullScreenBtn.Enable()
+							if !isFullScreen {
+								fullScreenBtn.SetText("Full Screen")
+								fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
+							}
+							cameraEnabled = true
+							audioEnabled = true
+							cameraBtn.SetText("Camera On")
+							audioBtn.SetText("Audio On")
+						})
+						log.Printf("Session created and WebRTC initialized: %s", currentSessionID)
+					}()
 				}),
 				widget.NewButton("Connect", func() {
 					log.Println("Attempting to connect to session....")
@@ -461,65 +629,98 @@ func Gui() {
 					peerID, username, err := sessions.JoinSession(currentSessionID)
 					if err != nil {
 						log.Printf("Failed to join session: %v", err)
+						videoLabel.Show()
 						videoLabel.SetText(fmt.Sprintf("Join error: %v", err))
 						return
 					}
 					currentPeerID = peerID
 					currentUsername = username
 
+					videoLabel.Show()
 					videoLabel.SetText("Starting camera...")
 					videoWindow.Show()
 
-					stream, err := camera.StartVideoStream("HD", "", updateVideo)
-					if err != nil {
-						log.Printf("Failed to start camera: %v", err)
-						videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
-						return
-					}
-
-					videoStream = stream
-					videoLabel.SetText("Connecting to signaling server...")
-
-					signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
-					if err := signalingClient.Connect(); err != nil {
-						log.Printf("Failed to connect to signaling server: %v", err)
-						videoLabel.SetText(fmt.Sprintf("Signaling error: %v", err))
-						return
-					}
-
-					webrtcConfig := webrtc.DefaultConfig()
-					webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
-						WebRTCConfig:    webrtcConfig,
-						SignalingClient: signalingClient,
-						OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
-							log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
-						},
-						OnPeerDisconnect: func(peerID string) {
-							log.Printf("Peer disconnected: %s", peerID)
-						},
-					})
-
-					videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
-					if err != nil {
-						log.Printf("Failed to create WebRTC tracks: %v", err)
-					} else {
-						if videoTrack != nil {
-							webrtcManager.AddLocalTrack(videoTrack)
+					go func() {
+						stream, err := camera.StartVideoStream(currentResolution, "", updateVideo)
+						if err != nil {
+							log.Printf("Failed to start camera: %v", err)
+							fyne.Do(func() {
+								videoLabel.Show()
+								videoLabel.SetText(fmt.Sprintf("Camera error: %v", err))
+							})
+							return
 						}
-						if audioTrack != nil {
-							webrtcManager.AddLocalTrack(audioTrack)
-						}
-					}
 
-					videoLabel.SetText("")
-					cameraBtn.Enable()
-					audioBtn.Enable()
-					statsBtn.Enable()
-					cameraEnabled = true
-					audioEnabled = true
-					cameraBtn.SetText("Camera On")
-					audioBtn.SetText("Audio On")
-					log.Printf("Connected to session: %s", currentSessionID)
+						videoStream = stream
+						fyne.Do(func() {
+							videoLabel.Show()
+							videoLabel.SetText("Connecting to signaling server...")
+						})
+
+						signalingClient = signaling.NewClient(signalingServerURL, currentSessionID, currentPeerID, currentUsername)
+						if err := signalingClient.Connect(); err != nil {
+							log.Printf("Failed to connect to signaling server: %v", err)
+							fyne.Do(func() {
+								videoLabel.SetText(fmt.Sprintf("Signaling error: %v\nCamera controls available", err))
+								cameraBtn.Enable()
+								audioBtn.Enable()
+								statsBtn.Enable()
+								resolutionSelect.Enable()
+								fullScreenBtn.Enable()
+								videoWindow.SetFullScreen(false)
+								isFullScreen = false
+								fullScreenBtn.SetText("Full Screen")
+								fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
+								cameraEnabled = true
+								audioEnabled = true
+								cameraBtn.SetText("Camera On")
+								audioBtn.SetText("Audio On")
+							})
+							return
+						}
+
+						webrtcConfig := webrtc.DefaultConfig()
+						webrtcManager = webrtc.NewManager(webrtc.ManagerConfig{
+							WebRTCConfig:    webrtcConfig,
+							SignalingClient: signalingClient,
+							OnRemoteTrack: func(peerID string, track *pwebrtc.TrackRemote, receiver *pwebrtc.RTPReceiver) {
+								log.Printf("Received remote track from peer %s: %s", peerID, track.Kind().String())
+							},
+							OnPeerDisconnect: func(peerID string) {
+								log.Printf("Peer disconnected: %s", peerID)
+							},
+						})
+
+						videoTrack, audioTrack, err := videoStream.CreateWebRTCTracks()
+						if err != nil {
+							log.Printf("Failed to create WebRTC tracks: %v", err)
+						} else {
+							if videoTrack != nil {
+								webrtcManager.AddLocalTrack(videoTrack)
+							}
+							if audioTrack != nil {
+								webrtcManager.AddLocalTrack(audioTrack)
+							}
+						}
+
+						fyne.Do(func() {
+							videoLabel.Hide()
+							cameraBtn.Enable()
+							audioBtn.Enable()
+							statsBtn.Enable()
+							resolutionSelect.Enable()
+							fullScreenBtn.Enable()
+							if !isFullScreen {
+								fullScreenBtn.SetText("Full Screen")
+								fullScreenBtn.SetIcon(theme.ViewFullScreenIcon())
+							}
+							cameraEnabled = true
+							audioEnabled = true
+							cameraBtn.SetText("Camera On")
+							audioBtn.SetText("Audio On")
+						})
+						log.Printf("Connected to session: %s", currentSessionID)
+					}()
 				}),
 			),
 		),

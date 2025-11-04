@@ -20,3 +20,9 @@ media:
     codec: "opus"
     sample_rate: 48000
     bitrate: 48000
+
+# Available video resolutions:
+# SD: 640x480 (Standard Definition)
+# HD: 1280x720 (High Definition)
+# FullHD: 1920x1080 (Full HD)
+# QHD: 2560x1440 (Quad HD)

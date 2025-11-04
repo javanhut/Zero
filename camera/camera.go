@@ -19,8 +19,8 @@ import (
 	_ "github.com/pion/mediadevices/pkg/driver/microphone" // Microphone driver
 
 	// Import codecs - required for media processing
-	_ "github.com/pion/mediadevices/pkg/codec/vpx"  // VP8/VP9 codec
 	_ "github.com/pion/mediadevices/pkg/codec/opus" // Opus audio codec
+	_ "github.com/pion/mediadevices/pkg/codec/vpx"  // VP8/VP9 codec
 )
 
 type ScreenSize struct {
@@ -29,8 +29,10 @@ type ScreenSize struct {
 }
 
 var Resolution = map[string]ScreenSize{
+	"SD":     {640, 480},
 	"HD":     {1280, 720},
 	"FullHD": {1920, 1080},
+	"QHD":    {2560, 1440},
 }
 
 type StreamStats struct {

@@ -86,6 +86,8 @@ Created peer connection for: <peer-id>
 - **Camera On/Off**: Toggle video
 - **Audio On/Off**: Toggle microphone
 - **Stats**: View stream statistics
+- **Select Camera**: Choose different camera source
+- **Resolution**: Switch between SD, HD, Full HD, and QHD resolutions
 
 ## Multi-Peer Testing (3+ Participants)
 
@@ -164,13 +166,11 @@ nc -u -v stun.l.google.com 19302
 **Solutions**:
 - Close unnecessary applications
 - Check CPU usage
-- Adjust resolution in camera.go:
-```go
-Resolution = map[string]ScreenSize{
-    "HD":     {1280, 720},   // Try lower resolution
-    "SD":     {640, 480},     // Better for slow networks
-}
-```
+- Use the Resolution dropdown in the GUI to switch between:
+  - **SD** (640x480) - Best for slow networks or low-end devices
+  - **HD** (1280x720) - Good balance of quality and performance
+  - **Full HD** (1920x1080) - High quality for good networks
+  - **QHD** (2560x1440) - Maximum quality (requires high bandwidth)
 
 ## Configuration
 
@@ -202,11 +202,13 @@ ICEServers: []webrtc.ICEServer{
 
 ### Change Video Resolution
 
-Edit `gui/gui.go`:
-```go
-stream, err := camera.StartVideoStream("HD", updateVideo)
-// Options: "HD" (1280x720), "FullHD" (1920x1080)
-```
+Use the Resolution dropdown in the GUI to switch between resolutions dynamically:
+- **SD**: 640x480 (Standard Definition)
+- **HD**: 1280x720 (High Definition) - Default
+- **Full HD**: 1920x1080 (Full High Definition)
+- **QHD**: 2560x1440 (Quad High Definition)
+
+The resolution can be changed during an active session and will restart the video stream with the new settings.
 
 ## Network Setup
 
